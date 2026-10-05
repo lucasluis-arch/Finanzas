@@ -1,8 +1,8 @@
 // Guarda la app en el celular para que abra sin conexión.
 // Los datos (GitHub) y la cotización nunca se cachean acá.
-const CACHE = 'finanzas-v1';
+const CACHE = 'finanzas-v2';
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', './index.html'])).catch(() => {}));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', './index.html', './apple-touch-icon.png', './icon-512.png', './manifest.webmanifest'])).catch(() => {}));
   self.skipWaiting();
 });
 self.addEventListener('activate', e => {
