@@ -344,7 +344,7 @@ select.input{appearance:none;-webkit-appearance:none;background-image:linear-gra
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </button>
   </header>
-  <main id="view"></main>
+  <main id="view"><p class="empty">Cargando… (versión 2026-10-14d)</p></main>
 </div>
 
 <button class="fab" data-act="newEntry" aria-label="Anotar un movimiento">
@@ -370,7 +370,7 @@ select.input{appearance:none;-webkit-appearance:none;background-image:linear-gra
 
 <script>
 // Se carga antes que la app: si la app no arranca o una pantalla falla, muestra el motivo en vez de quedar en blanco
-window.FIN_VERSION = '2026-10-14c';
+window.FIN_VERSION = '2026-10-14d';
 window.showFatal = function (msg) {
   var v = document.getElementById('view'); if (!v) return;
   var safe = String(msg || 'Error desconocido').replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; });
@@ -378,6 +378,7 @@ window.showFatal = function (msg) {
     '</p><p class="hint" style="margin-top:6px">Versión ' + window.FIN_VERSION + '. Mandá una captura de este mensaje.</p><div class="actions"><button class="btn small" onclick="location.reload()">Recargar</button></div></div>';
 };
 window.addEventListener('error', function (e) { window.showFatal(e.message + (e.lineno ? ' (línea ' + e.lineno + ')' : '')); });
+setTimeout(function () { if (!window.FIN_READY) window.showFatal('La app no terminó de arrancar. ' + (window.FIN_STEP ? 'Último paso: ' + window.FIN_STEP + '.' : 'El código principal no llegó a ejecutarse.')); }, 6000);
 </script>
 <script>
 'use strict';
@@ -509,8 +510,12 @@ function normalize(st) {
   for (const c of COLLS) out[c] = [...(st[c] || [])].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return out;
 }
+window.FIN_STEP = 'leer datos';
 S = normalize(S);
-if (repairDuplicates(S)) { LS.set('fin.state', S); META.dirty = true; LS.set('fin.meta', META); }
+window.FIN_STEP = 'unir duplicados';
+try { if (repairDuplicates(S)) { LS.set('fin.state', S); META.dirty = true; LS.set('fin.meta', META); } }
+catch (err) { console.error(err); }
+window.FIN_STEP = 'definir funciones';
 
 let REV = 0;
 function save() { LS.set('fin.state', S); }
@@ -1541,4 +1546,553 @@ function closeSheet() { SHEET = null; renderSheet(); }
 let toastTimer;
 function toast(msg, undo) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button data-act="undo">Deshacer</button>' : ''}`;
+  el.classList.add('show');
+  ACT.undo = () => { el.classList.remove('show'); if (undo) undo(); };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), undo ? 5500 : Math.min(7000, 2500 + msg.length * 35));
+}
+
+/* =========================================================
+   Carga rápida
+   ========================================================= */
+let QE = null;
+function defaultAcc(type) {
+  const accs = activeAccounts();
+  const last = PREFS.lastAcc?.[type];
+  return (last && accMap[last] && !accMap[last].archived) ? last : accs[0]?.id;
+}
+function openEntry(type = 'expense', tx = null, preset = null) {
+  if (tx) {
+    QE = { edit: tx.id, type: tx.type, amt: toStr(tx.amount), to: tx.toAmount != null ? toStr(tx.toAmount) : '', toTouched: true,
+      acc: tx.accountId, toAcc: tx.toAccountId || null, cat: tx.categoryId || null, date: tx.date, note: tx.note || '', active: 'from', allCats: false };
+  } else {
+    const acc = defaultAcc(type);
+    QE = { edit: null, type, amt: '', to: '', toTouched: false, acc, toAcc: null, cat: null, date: today(), note: '', active: 'from', allCats: false, ...(preset || {}) };
+    if (type === 'move') pickToAcc();
+  }
+  openSheet({ title: tx ? 'Editar movimiento' : (preset ? 'Registrar movimiento fijo' : 'Anotar'), render: entryHTML });
+}
+function pickToAcc() {
+  const accs = activeAccounts().filter(a => a.id !== QE.acc);
+  const last = PREFS.lastAcc?.moveTo;
+  if (!QE.toAcc || QE.toAcc === QE.acc || !accMap[QE.toAcc]) QE.toAcc = (last && last !== QE.acc && accMap[last] && !accMap[last].archived) ? last : accs[0]?.id || null;
+}
+function recalcTo() {
+  if (QE.type !== 'move' || QE.toTouched) return;
+  const a = accMap[QE.acc], b = accMap[QE.toAcc];
+  if (!a || !b || a.currency === b.currency) return;
+  const v = parseAmt(QE.amt);
+  QE.to = v > 0 ? toStr(Math.round(conv(v, a.currency, b.currency) * 100) / 100) : '';
+}
+const accChip = (x, on, role) => `<button class="chip ${on ? 'on' : ''}" data-act="qeAcc" data-role="${role}" data-id="${x.id}">${esc(x.name)}<small>${esc(CUR[x.currency].sym)}</small></button>`;
+function entryHTML() {
+  const q = QE, accs = activeAccounts();
+  if (!accs.length) return `<p class="empty">Primero creá una cuenta en Ajustes.</p>`;
+  if (!accMap[q.acc]) q.acc = accs[0].id;
+  const a = accMap[q.acc], cur = a.currency;
+  const needsBtn = q.type === 'move' || q.edit || q.rec;
+  let h = `<div class="seg" role="tablist" aria-label="Tipo de movimiento">${[['expense', 'Gasto'], ['income', 'Ingreso'], ['move', 'Entre cuentas']].map(([k, l]) => `<button role="tab" aria-selected="${q.type === k}" data-act="qeType" data-v="${k}">${l}</button>`).join('')}</div>`;
+
+  if (q.type === 'move') {
+    const b = accMap[q.toAcc], tc = b?.currency, diff = b && tc !== cur;
+    h += `<div class="qe-move">
+      <button class="mbox ${q.active === 'from' ? 'on' : ''}" data-act="qeActive" data-v="from"><span class="ml">Sale de ${esc(a.name)}</span><span class="mv">${esc(CUR[cur].sym)} ${esc(q.amt ? dispStr(q.amt) : '0')}</span></button>
+      ${diff ? `<button class="mbox ${q.active === 'to' ? 'on' : ''}" data-act="qeActive" data-v="to"><span class="ml">Entra a ${esc(b.name)}</span><span class="mv">${esc(CUR[tc].sym)} ${esc(q.to ? dispStr(q.to) : '0')}</span></button>` : ''}
+    </div>`;
+    if (diff) {
+      const fa = parseAmt(q.amt), ta = parseAmt(q.to);
+      h += `<p class="qe-rate">${fa > 0 && ta > 0 ? `Cambio a ${esc(rateText(fa, cur, ta, tc))}` : 'Tocá un monto para editarlo.'}${!q.toTouched && fa > 0 ? ' <span class="muted">Sugerido con la cotización de referencia: corregilo con lo que te dieron.</span>' : ''}</p>`;
+    }
+    h += `<div class="lbl">Desde</div><div class="chips">${accs.map(x => accChip(x, x.id === q.acc, 'from')).join('')}</div>
+      <div class="lbl">Hacia</div><div class="chips">${accs.filter(x => x.id !== q.acc).map(x => accChip(x, x.id === q.toAcc, 'to')).join('')}</div>`;
+  } else {
+    h += `<div class="qe-amount ${q.type}" aria-live="polite"><span class="sym">${esc(CUR[cur].sym)}</span><span class="val ${q.amt ? '' : 'empty'}">${esc(q.amt ? dispStr(q.amt) : '0')}</span></div>
+      <div class="chips">${accs.map(x => accChip(x, x.id === q.acc, 'from')).join('')}</div>`;
+  }
+
+  const isT = q.date === today(), isY = q.date === yesterday();
+  h += `<div class="chips" style="margin-top:2px"><button class="chip ${isT ? 'on' : ''}" data-act="qeDate" data-v="${today()}">Hoy</button><button class="chip ${isY ? 'on' : ''}" data-act="qeDate" data-v="${yesterday()}">Ayer</button>
+    <label class="chip datechip ${!isT && !isY ? 'on' : ''}"><span>${!isT && !isY ? esc(dayLabel(q.date)) : 'Otra fecha'}</span><input type="date" data-ch="qeDatePick" value="${q.date}" aria-label="Elegir fecha"></label></div>
+    <input class="input note" style="margin-top:8px" data-in="qeNote" placeholder="Nota (opcional)" value="${esc(q.note)}" maxlength="80" aria-label="Nota">`;
+
+  if (q.type !== 'move') {
+    const list = catsOf(q.type), show = q.allCats ? list : list.slice(0, 7);
+    h += `<div class="cats">${show.map(c => `<button class="cat ${q.cat === c.id ? 'on' : ''}" data-act="qeCat" data-id="${c.id}"><span class="ic">${esc(c.icon)}</span>${esc(c.name)}</button>`).join('')}
+      ${list.length > 7 ? `<button class="cat more" data-act="qeAllCats"><span class="ic">${q.allCats ? '−' : '⋯'}</span>${q.allCats ? 'Menos' : 'Todas'}</button>` : ''}</div>`;
+    if (!needsBtn) h += `<p class="qe-hint">${parseAmt(q.amt) > 0 ? 'Tocá la categoría para guardar' : ''}</p>`;
+  }
+
+  h += `<p class="hint desk-only" style="margin-top:8px">Podés escribir el monto con el teclado. Esc cierra.</p><div class="keypad">${['1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '0', '⌫'].map(k => `<button data-act="qeKey" data-k="${k}" aria-label="${k === '⌫' ? 'Borrar' : k === ',' ? 'Coma' : k}">${k}</button>`).join('')}</div>`;
+  if (needsBtn) h += `<div class="qe-actions">${q.edit ? `<button class="btn danger" data-act="qeDelete">Eliminar</button>` : ''}<button class="btn primary" data-act="qeSave">${q.edit ? 'Guardar cambios' : 'Guardar'}</button></div>`;
+  return h;
+}
+function saveEntry() {
+  const q = QE, amount = parseAmt(q.amt);
+  if (!(amount > 0)) { toast('Falta el monto'); return; }
+  let rec;
+  if (q.type === 'move') {
+    if (!q.toAcc || q.toAcc === q.acc || !accMap[q.toAcc]) { toast('Elegí una cuenta de destino distinta'); return; }
+    const fc = accMap[q.acc].currency, tc = accMap[q.toAcc].currency;
+    const toAmount = fc === tc ? amount : parseAmt(q.to);
+    if (!(toAmount > 0)) { toast('Falta cuánto entra en la otra cuenta'); return; }
+    rec = { type: 'move', amount, toAmount, accountId: q.acc, toAccountId: q.toAcc, categoryId: null };
+  } else {
+    if (!q.cat) { toast('Elegí una categoría'); return; }
+    rec = { type: q.type, amount, accountId: q.acc, categoryId: q.cat, toAccountId: null, toAmount: null };
+  }
+  rec.date = q.date; rec.note = q.note.trim();
+  const isNew = !q.edit, id = q.edit || uid(), recId = q.rec;
+  commit(() => {
+    if (isNew) S.tx.push({ id, created: now(), u: now(), ...rec });
+    else Object.assign(S.tx.find(x => x.id === id), rec, { u: now() });
+    if (recId) { const r = S.recurring.find(x => x.id === recId); if (r) { r.done = mk(today()); r.u = now(); } }
+  });
+  PREFS.lastAcc[q.type] = q.acc; if (q.type === 'move') PREFS.lastAcc.moveTo = q.toAcc; LS.set('fin.prefs', PREFS);
+  closeSheet();
+  const cur = accMap[q.acc].currency;
+  const label = { expense: 'Gasto', income: 'Ingreso', move: 'Movimiento' }[q.type];
+  const note = q.type === 'expense' ? (budgetNote(q.cat, q.date) || avgNote(q.cat, q.date, amount, cur)) : '';
+  if (isNew) toast(`${label} de ${fmt(amount, cur)} guardado.${note}`, recId ? null : () => commit(() => removeRec('tx', id)));
+  else toast(`Cambios guardados.${note}`);
+}
+function deleteTx(id) {
+  const t = S.tx.find(x => x.id === id); if (!t) return;
+  const copy = { ...t };
+  commit(() => removeRec('tx', id));
+  closeSheet();
+  toast('Movimiento eliminado', () => commit(() => { S.tx.push({ ...copy, u: now() }); }));
+}
+
+/* ----- Hoja de cuenta (saldo, rendimientos) ----- */
+let ACS = null;
+function openAccount(id) { ACS = { id, bal: '' }; openSheet({ title: accMap[id].name, render: accountHTML }); }
+function accPreview() {
+  const a = accMap[ACS.id], v = parseAmt(ACS.bal);
+  const hasTx = S.tx.some(t => t.accountId === a.id || t.toAccountId === a.id);
+  if (!isFinite(v)) return a.yields
+    ? `Abrí ${a.name}, copiá el saldo que te muestra y pegalo acá. La diferencia se registra como rendimiento.`
+    : 'Escribí lo que tenés de verdad. Si no coincide, la diferencia se registra como ajuste.';
+  if (!hasTx && !+a.initial) return 'Se guarda como saldo inicial de la cuenta.';
+  const diff = v - (BAL[a.id] || 0);
+  if (Math.abs(diff) < 0.005) return 'Coincide con el saldo que ya tenés anotado.';
+  if (diff > 0 && a.yields) return `Se registra un rendimiento de ${fmt(diff, a.currency, { sign: true })}.`;
+  return `Se registra un ajuste de ${fmt(diff, a.currency, { sign: true })}.`;
+}
+function accountHTML() {
+  const a = accMap[ACS.id]; if (!a) return '';
+  const txs = S.tx.filter(t => t.accountId === a.id || t.toAccountId === a.id).sort(txSort).slice(0, 8);
+  const y = a.yields ? yieldPerMonth(a.id) : 0;
+  return `<div style="padding:6px 0 4px"><span class="hint">${KIND[a.kind]} en ${CUR[a.currency].one}${a.yields ? ', con rendimientos' : ''}</span>
+      <div class="hero-num" style="font-size:40px;border-bottom-width:5px">${heroNum(BAL[a.id] || 0, a.currency)}</div>
+      ${y > 0 ? `<p class="hint" style="margin-top:8px">Rendimientos recientes: unos ${esc(fmt(y, a.currency))} por mes.</p>` : ''}</div>
+    <label class="field"><span>Registrar saldo</span><input class="input" inputmode="decimal" placeholder="Saldo que tenés hoy" data-in="acBal" value="${esc(ACS.bal)}"></label>
+    <p id="acPrev" class="hint" style="margin-top:6px">${esc(accPreview())}</p>
+    <div class="stack" style="margin-top:10px"><button class="btn primary" data-act="acSave">Registrar saldo</button></div>
+    <div class="panel-head" style="padding:20px 0 4px"><h2>Últimos movimientos</h2>${txs.length ? '<button class="link" data-act="acAll">Ver todos</button>' : ''}</div>
+    <div class="panel tight">${txs.map(txRow).join('') || '<p class="empty">Todavía no hay movimientos en esta cuenta.</p>'}</div>
+    <div class="stack"><button class="btn" data-act="editAcc" data-id="${a.id}">Editar cuenta</button></div>`;
+}
+function saveAccBalance() {
+  const a = accMap[ACS.id], v = parseAmt(ACS.bal);
+  if (!isFinite(v)) { toast('Escribí el saldo'); return; }
+  const mark = () => { const x = S.accounts.find(z => z.id === a.id); x.checked = today(); x.u = now(); return x; };
+  const hasTx = S.tx.some(t => t.accountId === a.id || t.toAccountId === a.id);
+  if (!hasTx && !+a.initial) {
+    commit(() => { mark().initial = v; });
+    closeSheet(); toast(`Saldo inicial de ${a.name} guardado`); return;
+  }
+  const diff = Math.round((v - (BAL[a.id] || 0)) * 100) / 100;
+  if (Math.abs(diff) < 0.005) { commit(mark); closeSheet(); toast('El saldo ya coincidía'); return; }
+  const type = diff > 0 && a.yields ? 'yield' : 'adjust', id = uid();
+  commit(() => { mark(); S.tx.push({ id, type, amount: diff, accountId: a.id, toAccountId: null, toAmount: null, categoryId: null, date: today(), note: '', created: now(), u: now() }); });
+  closeSheet();
+  toast(type === 'yield' ? `Rendimiento de ${fmt(diff, a.currency)} registrado` : `Ajuste de ${fmt(diff, a.currency, { sign: true })} registrado`, () => commit(() => removeRec('tx', id)));
+}
+function openSimpleTx(t) {
+  const a = accMap[t.accountId], cur = a?.currency || 'UYU';
+  openSheet({ title: t.type === 'yield' ? 'Rendimiento' : 'Ajuste de saldo', render: () => `
+    <div class="kv"><span class="muted">Monto</span><span class="amt ${t.type === 'yield' ? 'pos' : ''}">${esc(fmt(t.amount, cur, { sign: true }))}</span></div>
+    <div class="kv"><span class="muted">Cuenta</span><span>${esc(a?.name || '')}</span></div>
+    <div class="kv"><span class="muted">Fecha</span><span>${esc(dayLabel(t.date))}</span></div>
+    <p class="hint" style="margin-top:10px">Se calculó a partir del saldo que registraste. Para corregirlo, eliminalo y registrá el saldo de nuevo.</p>
+    <div class="stack"><button class="btn danger" data-act="delTx" data-id="${t.id}">Eliminar</button></div>` });
+}
+
+/* =========================================================
+   Editores (cuenta, categoría, fijo, meta, presupuestos)
+   ========================================================= */
+let FD = {};
+const fIn = (k, label, { type = 'text', mode, ph = '' } = {}) => `<label class="field"><span>${label}</span><input class="input" type="${type}" ${mode ? `inputmode="${mode}"` : ''} data-in="fd" data-k="${k}" value="${esc(FD[k] ?? '')}" placeholder="${esc(ph)}"></label>`;
+const fSeg = (k, label, opts) => `<div class="field"><span>${label}</span><div class="seg">${opts.map(([v, l]) => `<button type="button" aria-selected="${FD[k] === v}" data-act="fdSet" data-k="${k}" data-v="${v}">${l}</button>`).join('')}</div></div>`;
+const fSel = (k, label, opts) => `<label class="field"><span>${label}</span><select class="input" data-ch="fd" data-k="${k}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(FD[k] ?? '') === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+const fChk = (k, label, sub) => `<label class="check"><input type="checkbox" data-ch="fdChk" data-k="${k}" ${FD[k] ? 'checked' : ''}><span>${label}${sub ? `<small>${sub}</small>` : ''}</span></label>`;
+const curOpts = CURS.map(c => [c, CUR[c].name]);
+
+function openAccEdit(id) {
+  const a = id && S.accounts.find(x => x.id === id);
+  FD = a ? { ...a, initial: toStr(+a.initial || 0) } : { id: null, name: '', currency: 'UYU', kind: 'wallet', initial: '', yields: false, archived: false };
+  openSheet({ title: a ? 'Editar cuenta' : 'Nueva cuenta', render: () => {
+    const used = FD.id && S.tx.some(t => t.accountId === FD.id || t.toAccountId === FD.id);
+    return `${fIn('name', 'Nombre', { ph: 'Ej: Prex, Dólares en casa' })}
+      ${fSeg('kind', 'Tipo', [['cash', 'Efectivo'], ['bank', 'Banco'], ['wallet', 'Billetera']])}
+      ${fSeg('currency', 'Moneda', curOpts)}
+      ${used && a && FD.currency !== a.currency ? `<p class="err">Cambiar la moneda reinterpreta todos los movimientos de esta cuenta en la nueva moneda.</p>` : ''}
+      ${fIn('initial', 'Saldo inicial', { mode: 'decimal', ph: '0' })}
+      ${fChk('yields', 'Genera rendimientos', 'Al registrar el saldo, la diferencia a favor se anota como rendimiento.')}
+      ${FD.id ? fChk('archived', 'Archivar', 'Deja de aparecer al anotar, pero conserva su historial.') : ''}
+      <div class="stack"><button class="btn primary" data-act="saveAcc">Guardar</button>${FD.id && !used ? `<button class="btn danger" data-act="delAcc">Eliminar cuenta</button>` : ''}</div>`;
+  } });
+}
+function openCatEdit(id, kind) {
+  const c = id && S.categories.find(x => x.id === id);
+  FD = c ? { ...c } : { id: null, name: '', icon: '', kind: kind || 'expense' };
+  openSheet({ title: c ? 'Editar categoría' : 'Nueva categoría', render: () => `
+    ${fIn('icon', 'Ícono (un emoji)', { ph: '🧉' })}${fIn('name', 'Nombre')}
+    ${fSeg('kind', 'Es de', [['expense', 'Gastos'], ['income', 'Ingresos']])}
+    <div class="stack"><button class="btn primary" data-act="saveCat">Guardar</button>${FD.id ? `<button class="btn danger" data-act="delCat">Eliminar categoría</button>` : ''}</div>
+    ${FD.id ? `<p class="hint" style="margin-top:8px">Si la eliminás, sus movimientos quedan como "Sin categoría".</p>` : ''}` });
+}
+function openRecEdit(id) {
+  const r = id && S.recurring.find(x => x.id === id);
+  const accs = activeAccounts();
+  FD = r ? { ...r, amount: toStr(r.amount), day: String(r.day) } : { id: null, type: 'expense', note: '', amount: '', accountId: accs[0]?.id, categoryId: '', day: '1' };
+  openSheet({ title: r ? 'Editar movimiento fijo' : 'Nuevo movimiento fijo', render: () => {
+    const cats = S.categories.filter(c => c.kind === FD.type);
+    if (!cats.some(c => c.id === FD.categoryId)) FD.categoryId = cats[0]?.id || '';
+    return `${fSeg('type', 'Tipo', [['expense', 'Gasto'], ['income', 'Ingreso']])}
+      ${fIn('note', 'Nombre', { ph: 'Ej: Alquiler, Spotify' })}
+      ${fIn('amount', 'Monto aproximado', { mode: 'decimal' })}
+      ${fSel('accountId', 'Cuenta', accs.map(a => [a.id, `${a.name} (${CUR[a.currency].sym})`]))}
+      ${fSel('categoryId', 'Categoría', cats.map(c => [c.id, `${c.icon} ${c.name}`]))}
+      ${fSel('day', 'Día del mes', [...Array(28)].map((_, i) => [String(i + 1), String(i + 1)]))}
+      <p class="hint" style="margin-top:8px">Aparece en Inicio desde tres días antes. Al registrarlo podés corregir el monto.</p>
+      <div class="stack"><button class="btn primary" data-act="saveRec">Guardar</button>${FD.id ? `<button class="btn danger" data-act="delRec">Eliminar</button>` : ''}</div>`;
+  } });
+}
+function openGoalEdit(id) {
+  const g = id && S.goals.find(x => x.id === id);
+  FD = g ? { ...g, target: toStr(g.target), accountId: g.accountId || '' } : { id: null, name: '', target: '', currency: S.settings.base, deadline: '', accountId: '' };
+  openSheet({ title: g ? 'Editar meta' : 'Nueva meta', render: () => `
+    ${fIn('name', 'Para qué', { ph: 'Ej: Notebook nueva, viaje' })}
+    ${fSeg('currency', 'Moneda', curOpts)}
+    ${fIn('target', 'Cuánto querés juntar', { mode: 'decimal' })}
+    ${fIn('deadline', 'Para cuándo (opcional)', { type: 'month' })}
+    ${fSel('accountId', 'Dónde la juntás', [['', 'Ninguna cuenta: sumo aportes a mano'], ...activeAccounts().map(a => [a.id, `${a.name} (${CUR[a.currency].sym})`])])}
+    <p class="hint" style="margin-top:8px">Si la vinculás a una cuenta, el avance es el saldo de esa cuenta, rendimientos incluidos.</p>
+    ${g && !g.accountId && (g.contribs || []).length ? `<div class="panel-head" style="padding:18px 0 4px"><h2>Aportes</h2></div><div class="panel tight">${[...g.contribs].sort((a, b) => a.date < b.date ? 1 : -1).map(c => `<div class="row"><span class="grow"><span class="t1">${esc(dayLabel(c.date))}</span></span><span class="amt">${esc(fmt(c.amount, g.currency))}</span><button class="icon-btn" data-act="delContrib" data-id="${c.id}" aria-label="Borrar aporte">✕</button></div>`).join('')}</div>` : ''}
+    <div class="stack"><button class="btn primary" data-act="saveGoal">Guardar</button>${FD.id ? `<button class="btn danger" data-act="delGoal">Eliminar meta</button>` : ''}</div>` });
+}
+function openContrib(id) {
+  const g = S.goals.find(x => x.id === id);
+  FD = { goalId: id, amount: '' };
+  openSheet({ title: `Aporte a ${g.name}`, render: () => `${fIn('amount', `Monto en ${CUR[g.currency].one}`, { mode: 'decimal' })}
+    <p class="hint" style="margin-top:8px">Esto solo suma al avance de la meta; no mueve plata entre cuentas.</p>
+    <div class="stack"><button class="btn primary" data-act="saveContrib">Sumar</button></div>` });
+}
+function openBudgets() {
+  FD = { cur: S.settings.budgetCur };
+  for (const c of S.categories.filter(c => c.kind === 'expense')) { const b = S.budgets.find(x => x.categoryId === c.id); FD['b_' + c.id] = b ? toStr(b.amount) : ''; }
+  openSheet({ title: 'Presupuestos mensuales', render: () => {
+    const m = mk(today()), prev = addMonths(m, -1), stp = monthStats(prev, FD.cur);
+    return `${fSeg('cur', 'Moneda de los presupuestos', curOpts)}
+      <p class="hint" style="margin-top:8px">Dejá vacío lo que no quieras limitar. A la derecha, lo que gastaste en ${MONTHS[+prev.slice(5) - 1]} como referencia.</p>
+      ${S.categories.filter(c => c.kind === 'expense').sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(c => `
+        <label class="rateline"><span>${esc(c.icon)} ${esc(c.name)}<small>${stp.byCat[c.id] ? esc(fmt(stp.byCat[c.id], FD.cur, { dec: FD.cur === 'UYU' ? 0 : 2 })) : 'Sin gastos'}</small></span>
+        <input class="input" inputmode="decimal" data-in="fd" data-k="b_${c.id}" value="${esc(FD['b_' + c.id])}" placeholder="Sin tope"></label>`).join('')}
+      <div class="stack"><button class="btn primary" data-act="saveBudgets">Guardar</button></div>`;
+  } });
+}
+
+/* =========================================================
+   Acciones
+   ========================================================= */
+const ACT = {
+  tab: d => { TAB = d.tab; window.scrollTo(0, 0); render(); },
+  goHome: () => { TAB = 'home'; render(); },
+  goSettings: () => { closeSheet(); TAB = 'settings'; GHD = null; GH_EDIT = false; window.scrollTo(0, 0); render(); },
+  closeSheet,
+  newEntry: () => openEntry('expense'),
+  cycleBase: () => commit(() => { const i = CURS.indexOf(S.settings.base); S.settings.base = CURS[(i + 1) % 3]; S.settings.u = now(); }),
+  setBase: d => commit(() => { S.settings.base = d.v; S.settings.u = now(); }),
+  setTheme: d => commit(() => { S.settings.theme = d.v; S.settings.u = now(); }),
+  refreshRates: () => fetchRates(true),
+  bannerOff: () => { PREFS.bannerOff = true; LS.set('fin.prefs', PREFS); render(); },
+  syncPill: () => { if (!CFG) ACT.goSettings(); else if (syncState === 'error') { ACT.goSettings(); } else sync(); },
+  syncNow: () => sync(),
+
+  // carga rápida
+  qeType: d => { QE.type = d.v; QE.cat = null; QE.allCats = false; QE.active = 'from'; if (!QE.edit) QE.acc = defaultAcc(d.v); if (d.v === 'move') { pickToAcc(); recalcTo(); } renderSheet(); },
+  qeAcc: d => {
+    if (d.role === 'to') { QE.toAcc = d.id; QE.toTouched = false; }
+    else { QE.acc = d.id; if (QE.type === 'move') { QE.toTouched = false; pickToAcc(); } }
+    recalcTo();
+    const a = accMap[QE.acc], b = accMap[QE.toAcc];
+    if (QE.active === 'to' && (!b || a.currency === b.currency)) QE.active = 'from';
+    renderSheet();
+  },
+  qeActive: d => { QE.active = d.v; renderSheet(); },
+  qeKey: d => {
+    const k = d.k, field = QE.active === 'to' ? 'to' : 'amt';
+    let s = QE[field] || '';
+    if (k === '⌫') s = s.slice(0, -1);
+    else if (k === ',') { if (!s.includes(',')) s = (s || '0') + ','; }
+    else {
+      if (s.includes(',') && s.split(',')[1].length >= 2) return;
+      if (s.replace(',', '').length >= 10) return;
+      s = s === '0' ? k : s + k;
+    }
+    QE[field] = s;
+    if (field === 'to') QE.toTouched = true; else recalcTo();
+    renderSheet();
+  },
+  qeDate: d => { QE.date = d.v; renderSheet(); },
+  qeAllCats: () => { QE.allCats = !QE.allCats; renderSheet(); },
+  qeCat: d => {
+    QE.cat = d.id;
+    if (!QE.edit && !QE.rec) {
+      if (!(parseAmt(QE.amt) > 0)) { toast('Primero escribí el monto'); renderSheet(); return; }
+      saveEntry();
+    } else renderSheet();
+  },
+  qeSave: () => saveEntry(),
+  qeDelete: () => deleteTx(QE.edit),
+  delTx: d => deleteTx(d.id),
+  openTx: d => {
+    const t = S.tx.find(x => x.id === d.id); if (!t) return;
+    if (t.type === 'yield' || t.type === 'adjust') openSimpleTx(t); else openEntry(t.type, t);
+  },
+
+  // cuentas
+  openAcc: d => openAccount(d.id),
+  acSave: () => saveAccBalance(),
+  acAll: () => { TXF = { q: '', type: 'all', acc: ACS.id, limit: 80 }; closeSheet(); TAB = 'tx'; window.scrollTo(0, 0); render(); },
+  newAcc: () => openAccEdit(null),
+  editAcc: d => openAccEdit(d.id),
+  saveAcc: () => {
+    const d = FD; if (!d.name.trim()) { toast('Poné un nombre'); return; }
+    const initial = parseAmt(d.initial); const ini = isFinite(initial) ? initial : 0;
+    commit(() => {
+      if (d.id) Object.assign(S.accounts.find(x => x.id === d.id), { name: d.name.trim(), currency: d.currency, kind: d.kind, initial: ini, yields: !!d.yields, archived: !!d.archived, u: now() });
+      else S.accounts.push({ id: uid(), name: d.name.trim(), currency: d.currency, kind: d.kind, initial: ini, yields: !!d.yields, archived: false, order: Math.max(0, ...S.accounts.map(a => a.order ?? 0)) + 1, u: now() });
+    });
+    closeSheet(); toast('Cuenta guardada');
+  },
+  delAcc: () => { if (!confirm('¿Eliminar esta cuenta?')) return; commit(() => removeRec('accounts', FD.id)); closeSheet(); },
+
+  // categorías
+  newCat: d => openCatEdit(null, d.v),
+  editCat: d => openCatEdit(d.id),
+  saveCat: () => {
+    const d = FD; if (!d.name.trim()) { toast('Poné un nombre'); return; }
+    const icon = (d.icon || '').trim() || '•';
+    commit(() => {
+      if (d.id) Object.assign(S.categories.find(x => x.id === d.id), { name: d.name.trim(), icon, kind: d.kind, u: now() });
+      else S.categories.push({ id: uid(), name: d.name.trim(), icon, kind: d.kind, order: Math.max(0, ...S.categories.map(c => c.order ?? 0)) + 1, u: now() });
+    });
+    closeSheet();
+  },
+  delCat: () => {
+    if (!confirm('¿Eliminar esta categoría?')) return;
+    const id = FD.id;
+    commit(() => { removeRec('categories', id); for (const b of S.budgets.filter(b => b.categoryId === id)) removeRec('budgets', b.id); });
+    closeSheet();
+  },
+
+  // fijos
+  newRec: () => openRecEdit(null),
+  editRec: d => openRecEdit(d.id),
+  saveRec: () => {
+    const d = FD, amount = parseAmt(d.amount);
+    if (!(amount > 0)) { toast('Falta el monto'); return; }
+    if (!d.accountId || !d.categoryId) { toast('Elegí cuenta y categoría'); return; }
+    const data = { type: d.type, note: d.note.trim(), amount, accountId: d.accountId, categoryId: d.categoryId, day: +d.day || 1 };
+    commit(() => {
+      if (d.id) Object.assign(S.recurring.find(x => x.id === d.id), data, { u: now() });
+      else S.recurring.push({ id: uid(), ...data, since: mk(today()), done: null, u: now() });
+    });
+    closeSheet();
+  },
+  delRec: () => { commit(() => removeRec('recurring', FD.id)); closeSheet(); },
+  recRegister: d => {
+    const r = S.recurring.find(x => x.id === d.id); if (!r) return;
+    const m = mk(today()), day = Math.min(r.day, +monthEnd(m).slice(8));
+    const date = `${m}-${pad(day)}` <= today() ? `${m}-${pad(day)}` : today();
+    openEntry(r.type, null, { type: r.type, amt: toStr(r.amount), acc: r.accountId, cat: r.categoryId, note: r.note || '', date, rec: r.id });
+  },
+  recSkip: d => commit(() => { const r = S.recurring.find(x => x.id === d.id); r.done = mk(today()); r.u = now(); }),
+
+  // metas
+  newGoal: () => openGoalEdit(null),
+  editGoal: d => openGoalEdit(d.id),
+  saveGoal: () => {
+    const d = FD, target = parseAmt(d.target);
+    if (!d.name.trim()) { toast('Poné un nombre'); return; }
+    if (!(target > 0)) { toast('Falta cuánto querés juntar'); return; }
+    const data = { name: d.name.trim(), target, currency: d.currency, deadline: d.deadline || '', accountId: d.accountId || null };
+    commit(() => {
+      if (d.id) Object.assign(S.goals.find(x => x.id === d.id), data, { u: now() });
+      else S.goals.push({ id: uid(), ...data, contribs: [], u: now() });
+    });
+    closeSheet();
+  },
+  delGoal: () => { if (!confirm('¿Eliminar esta meta?')) return; commit(() => removeRec('goals', FD.id)); closeSheet(); },
+  goalContrib: d => openContrib(d.id),
+  saveContrib: () => {
+    const v = parseAmt(FD.amount); if (!v) { toast('Falta el monto'); return; }
+    const gid = FD.goalId;
+    commit(() => { const g = S.goals.find(x => x.id === gid); g.contribs = [...(g.contribs || []), { id: uid(), date: today(), amount: v }]; g.u = now(); });
+    closeSheet(); toast('Aporte sumado');
+  },
+  delContrib: d => {
+    const gid = FD.id;
+    commit(() => { const g = S.goals.find(x => x.id === gid); g.contribs = (g.contribs || []).filter(c => c.id !== d.id); g.u = now(); });
+    renderSheet();
+  },
+
+  // presupuestos
+  editBudgets: () => openBudgets(),
+  saveBudgets: () => {
+    commit(() => {
+      S.settings.budgetCur = FD.cur; S.settings.u = now();
+      for (const c of S.categories.filter(c => c.kind === 'expense')) {
+        const v = parseAmt(FD['b_' + c.id]), id = 'b_' + c.id;
+        const ex = S.budgets.find(b => b.id === id);
+        if (v > 0) { if (ex) { if (ex.amount !== v) { ex.amount = v; ex.u = now(); } } else S.budgets.push({ id, categoryId: c.id, amount: v, u: now() }); }
+        else if (ex) removeRec('budgets', id);
+      }
+    });
+    closeSheet(); toast('Presupuestos guardados');
+  },
+
+  // formularios genéricos
+  fdSet: d => { FD[d.k] = d.v; renderSheet(); },
+
+  // movimientos
+  txType: d => { TXF.type = d.v; TXF.limit = 80; renderMainOnly(); },
+  txAccClear: () => { TXF.acc = null; renderMainOnly(); },
+  txCat: d => { TXF = { q: '', type: 'all', acc: null, cat: d.id, limit: 80 }; TAB = 'tx'; window.scrollTo(0, 0); render(); },
+  txCatClear: () => { TXF.cat = null; renderMainOnly(); },
+  openClosing: d => openClosing(d.v),
+  txMore: () => { TXF.limit += 120; $('#txList').innerHTML = txListHTML(); },
+
+  // reportes
+  rm: d => { RM = addMonths(RM, +d.v); if (RM > mk(today())) RM = mk(today()); renderMainOnly(); },
+
+  // GitHub
+  ghEdit: () => { GH_EDIT = true; GHD = null; renderMainOnly(); },
+  ghCancel: () => { GH_EDIT = false; GHD = null; renderMainOnly(); },
+  ghConnect: async () => {
+    const d = GHD;
+    if (!d.owner.trim() || !d.repo.trim() || !d.token.trim()) { toast('Completá usuario, repo y token'); return; }
+    CFG = { owner: d.owner.trim(), repo: d.repo.trim(), branch: (d.branch || 'main').trim(), path: (d.path || 'finanzas.json').trim().replace(/^\/+/, ''), token: d.token.trim() };
+    LS.set('fin.gh', CFG);
+    GH_EDIT = false; META.dirty = true;
+    renderMainOnly();
+    await sync();
+    renderMainOnly();
+    if (syncState === 'ok') toast('Conectado. Tus datos ya están en GitHub.');
+    else if (syncState === 'error') { GH_EDIT = true; renderMainOnly(); }
+  },
+  ghDisconnect: () => {
+    if (!confirm('Este dispositivo deja de sincronizar. Los datos siguen acá y en GitHub. ¿Seguir?')) return;
+    CFG = null; LS.del('fin.gh'); GHD = null; setSync('local'); renderMainOnly();
+  },
+
+  // datos
+  exportJson: () => download(`finanzas-${today()}.json`, JSON.stringify(S, null, 1), 'application/json'),
+  importJson: () => $('#importFile').click(),
+  exportCsv: () => {
+    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const num = n => n == null ? '' : String(Math.round(n * 100) / 100).replace('.', ',');
+    const T = { expense: 'Gasto', income: 'Ingreso', move: 'Entre cuentas', yield: 'Rendimiento', adjust: 'Ajuste' };
+    const rows = [['Fecha', 'Tipo', 'Cuenta', 'Moneda', 'Monto', 'Categoría', 'Nota', 'Cuenta destino', 'Moneda destino', 'Monto destino']];
+    for (const t of [...S.tx].sort(txSort)) {
+      const a = accMap[t.accountId], b = accMap[t.toAccountId];
+      rows.push([t.date, T[t.type], a?.name, a?.currency, num(t.type === 'expense' ? -t.amount : t.amount), catMap[t.categoryId]?.name, t.note, b?.name, b?.currency, num(t.toAmount)]);
+    }
+    download(`movimientos-${today()}.csv`, '\ufeff' + rows.map(r => r.map(q).join(';')).join('\r\n'), 'text/csv;charset=utf-8');
+  },
+  wipeLocal: () => {
+    if (!confirm('Se borran los datos y la conexión de este dispositivo. Lo que esté en GitHub no se toca. ¿Seguir?')) return;
+    ['fin.state', 'fin.gh', 'fin.meta', 'fin.prefs', 'fin.rates'].forEach(LS.del);
+    location.reload();
+  },
+};
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const IN = {
+  qeNote: v => { QE.note = v; },
+  txq: v => { TXF.q = v; TXF.limit = 80; $('#txList').innerHTML = txListHTML(); },
+  acBal: v => { ACS.bal = v; const p = $('#acPrev'); if (p) p.textContent = accPreview(); },
+  fd: (v, el) => { FD[el.dataset.k] = v; },
+  ghd: (v, el) => { GHD[el.dataset.k] = v; },
+};
+const CH = {
+  qeDatePick: v => { if (v) { QE.date = v; renderSheet(); } },
+  fd: (v, el) => { FD[el.dataset.k] = v; if (SHEET) renderSheet(); },
+  fdChk: (v, el) => { FD[el.dataset.k] = el.checked; },
+  manualRate: (v, el) => {
+    const n = parseAmt(v), c = el.dataset.k;
+    commit(() => { S.settings.manual = { ...(S.settings.manual || {}), [c]: n > 0 ? n : null }; S.settings.u = now(); });
+    logRateToday();
+    toast(n > 0 ? `Cotización manual guardada: 1 ${CUR[c].sym} = ${fmt(n, 'UYU', { dec: 2 })}` : 'Vuelve a usarse la cotización automática');
+  },
+  importFile: (v, el) => {
+    const f = el.files?.[0]; el.value = ''; if (!f) return;
+    f.text().then(txt => {
+      const data = JSON.parse(txt);
+      if (!data || !Array.isArray(data.tx) || !Array.isArray(data.accounts)) throw new Error();
+      commit(() => { S = merge(S, normalize(data)); });
+      toast('Respaldo importado y combinado');
+    }).catch(() => toast('Ese archivo no es un respaldo válido'));
+  },
+};
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  const f = ACT[el.dataset.act]; if (f) { e.preventDefault(); f(el.dataset, el, e); }
+});
+document.addEventListener('input', e => { const el = e.target.closest('[data-in]'); if (el && IN[el.dataset.in]) IN[el.dataset.in](el.value, el, e); });
+document.addEventListener('change', e => { const el = e.target.closest('[data-ch]'); if (el && CH[el.dataset.ch]) CH[el.dataset.ch](el.value, el, e); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && SHEET) { closeSheet(); return; }
+  const typing = e.target.matches('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey;
+  if (SHEET && SHEET.render === entryHTML && !typing) {
+    let k = null;
+    if (/^[0-9]$/.test(e.key)) k = e.key;
+    else if (e.key === ',' || e.key === '.') k = ',';
+    else if (e.key === 'Backspace') k = '⌫';
+    if (k) { e.preventDefault(); ACT.qeKey({ k }); return; }
+    if (e.key === 'Enter' && (QE.type === 'move' || QE.edit || QE.rec)) { e.preventDefault(); saveEntry(); return; }
+  }
+  if (!SHEET && !typing && TAB !== 'settings' && (e.key === 'n' || e.key === '+')) { e.preventDefault(); openEntry('expense'); }
+  if (e.key === 'Enter' && e.target.matches('[data-ch="manualRate"]')) e.target.blur();
+});
+window.addEventListener('online', () => { sync(); fetchRates(); });
+window.addEventListener('offline', () => { if (CFG) setSync('offline'); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (CFG && (META.dirty || now() - META.lastSync > 60e3)) sync();
+  fetchRates();
+  if (!SHEET) render();
+});
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme());
+DESK.addEventListener?.('change', () => renderMainOnly());
+
+/* ---------- Arranque ---------- */
+window.FIN_STEP = 'dibujar pantalla';
+try { render(); } catch (err) { console.error(err); showFatal(`${err.message} (al dibujar) ${String(err.stack || '').split('\n').slice(0, 2).join(' ')}`); }
+window.FIN_READY = true;
+try { if (RATES && iso(new Date(RATES.fetchedAt)) === today()) logRateToday(); } catch (err) { console.error(err); }
+try { if (CFG) sync(); } catch (err) { console.error(err); }
+try { fetchRates(); } catch (err) { console.error(err); }
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
