@@ -263,8 +263,7 @@ select.input{appearance:none;-webkit-appearance:none;background-image:linear-gra
 
 
 /* Columnas: en el celular se apilan en el orden indicado; en escritorio, dos columnas */
-.cols{display:flex;flex-direction:column}
-.col{display:contents}
+.cols,.col{display:block}
 .alert{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;border-top:1px solid var(--line)}
 .alert .ic{width:26px;flex:none;text-align:center;font-size:18px;line-height:1.3}
 .alert p{flex:1;font-size:14px;line-height:1.45}
@@ -369,6 +368,17 @@ select.input{appearance:none;-webkit-appearance:none;background-image:linear-gra
 <div id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden data-ch="importFile">
 
+<script>
+// Se carga antes que la app: si la app no arranca o una pantalla falla, muestra el motivo en vez de quedar en blanco
+window.FIN_VERSION = '2026-10-14c';
+window.showFatal = function (msg) {
+  var v = document.getElementById('view'); if (!v) return;
+  var safe = String(msg || 'Error desconocido').replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; });
+  v.innerHTML = '<div class="panel banner"><p><b>Algo falló al mostrar esta pantalla.</b></p><p class="hint" style="margin-top:6px">' + safe +
+    '</p><p class="hint" style="margin-top:6px">Versión ' + window.FIN_VERSION + '. Mandá una captura de este mensaje.</p><div class="actions"><button class="btn small" onclick="location.reload()">Recargar</button></div></div>';
+};
+window.addEventListener('error', function (e) { window.showFatal(e.message + (e.lineno ? ' (línea ' + e.lineno + ')' : '')); });
+</script>
 <script>
 'use strict';
 /* =========================================================
@@ -548,7 +558,7 @@ function repairDuplicates(st) {
   st.goals.forEach(g => bump(g.accountId));
 
   const cg = {};
-  for (const c of st.categories) (cg[c.kind + '|' + norm(c.name).trim()] ||= []).push(c);
+  for (const c of st.categories) { const k = c.kind + '|' + norm(c.name).trim(); (cg[k] = cg[k] || []).push(c); }
   for (const g of Object.values(cg)) {
     if (g.length < 2) continue;
     g.sort((a, b) => (rc[b.id] || 0) - (rc[a.id] || 0) || byId(a, b));
@@ -566,7 +576,7 @@ function repairDuplicates(st) {
     }
   }
   const ag = {};
-  for (const a of st.accounts) (ag[a.currency + '|' + norm(a.name).trim()] ||= []).push(a);
+  for (const a of st.accounts) { const k = a.currency + '|' + norm(a.name).trim(); (ag[k] = ag[k] || []).push(a); }
   for (const g of Object.values(ag)) {
     if (g.length < 2) continue;
     g.sort((a, b) => (rc[b.id] || 0) - (rc[a.id] || 0) || (Math.abs(+b.initial || 0) - Math.abs(+a.initial || 0)) || byId(a, b));
@@ -1118,7 +1128,9 @@ function viewHome() {
   if (recent.length) B.push(`<section class="panel" style="order:8"><div class="panel-head"><h2>Últimos movimientos</h2><button class="link" data-act="tab" data-tab="tx">Ver todos</button></div>${recent.map(txRow).join('')}</section>`);
 
   A.push(`<p class="credit" style="order:9"><a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Cotizaciones de ExchangeRate-API</a></p>`);
-  return `<div class="cols"><div class="col">${A.join('')}</div><div class="col">${B.join('')}</div></div>`;
+  if (DESK.matches) return `<div class="cols"><div class="col">${A.join('')}</div><div class="col">${B.join('')}</div></div>`;
+  const ord = x => +((x.match(/order:(\d+)/) || [0, 99])[1]);
+  return [...A, ...B].sort((x, y) => ord(x) - ord(y)).join('');
 }
 function refDay(t) {
   const d = iso(new Date(t));
@@ -1475,7 +1487,7 @@ function viewSettings() {
     <button class="btn" data-act="exportCsv">Descargar movimientos (.csv)</button>
     <button class="btn danger" data-act="wipeLocal">Borrar datos de este dispositivo</button></div>
     <p style="margin-top:10px">Importar combina el respaldo con lo que ya tenés, sin duplicar. Borrar no toca lo que está en GitHub.</p></div></section>`;
-  return `<div class="sgrid">${h}</div>`;
+  return `<div class="sgrid">${h}</div><p class="credit">Versión ${window.FIN_VERSION}</p>`;
 }
 
 /* =========================================================
@@ -1490,7 +1502,8 @@ function applyTheme() {
 }
 function renderMainOnly() {
   $('#title').textContent = TAB === 'home' && DESK.matches ? 'Inicio' : TITLES[TAB];
-  $('#view').innerHTML = VIEWS[TAB]();
+  try { $('#view').innerHTML = VIEWS[TAB](); }
+  catch (err) { console.error(err); showFatal(`${err.message} [${TAB}] ${String(err.stack || '').split('\n').slice(0, 2).join(' ')}`); }
   document.querySelectorAll('.tab').forEach(b => b.setAttribute('aria-current', b.dataset.tab === TAB ? 'page' : 'false'));
   $('#backBtn').hidden = TAB !== 'settings';
   $('#gearBtn').hidden = TAB === 'settings';
@@ -1528,27 +1541,4 @@ function closeSheet() { SHEET = null; renderSheet(); }
 let toastTimer;
 function toast(msg, undo) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button data-act="undo">Deshacer</button>' : ''}`;
-  el.classList.add('show');
-  ACT.undo = () => { el.classList.remove('show'); if (undo) undo(); };
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), undo ? 5500 : Math.min(7000, 2500 + msg.length * 35));
-}
-
-/* =========================================================
-   Carga rápida
-   ========================================================= */
-let QE = null;
-function defaultAcc(type) {
-  const accs = activeAccounts();
-  const last = PREFS.lastAcc?.[type];
-  return (last && accMap[last] && !accMap[last].archived) ? last : accs[0]?.id;
-}
-function openEntry(type = 'expense', tx = null, preset = null) {
-  if (tx) {
-    QE = { edit: tx.id, type: tx.type, amt: toStr(tx.amount), to: tx.toAmount != null ? toStr(tx.toAmount) : '', toTouched: true,
-      acc: tx.accountId, toAcc: tx.toAccountId || null, cat: tx.categoryId || null, date: tx.date, note: tx.note || '', active: 'from', allCats: false };
-  } else {
-    const acc = defaultAcc(type);
-    QE = { edit: null, type, amt: '', to: '', toTouched: false, acc, toAcc: null, cat: null, date: today(), note: '', active: 'from', allCats: false, ...(preset || {}) };
-    if (type === 'move') pickToAcc(
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? '<
